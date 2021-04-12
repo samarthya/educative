@@ -2,80 +2,111 @@ package main
 
 import (
 	"fmt"
-	"html/template"
-	"log"
 	"net/http"
-	"os"
-	"time"
-
-	"github.com/magiconair/properties"
-	"urlshort.samarthya.me/listeners"
-
-	db "urlshort.samarthya.me/utils"
+	"sync"
 )
 
-const (
-	//TEMPLATES folder that contains the templates
-	TEMPLATES = "templates.dir"
-)
-
-var s *http.Server
-
-var myHandler = &listeners.MyHandler{DB: db.NewDB()}
-var urlDB *db.URLDB
-
-var props *properties.Properties
-
-func init() {
-	log.Println(" Initialized ")
-	s = &http.Server{
-		Addr:           ":8181",
-		Handler:        myHandler,
-		ReadTimeout:    10 * time.Second,
-		WriteTimeout:   10 * time.Second,
-		MaxHeaderBytes: 1 << 20,
-	}
-	props = properties.MustLoadFile("./config.properties", properties.UTF8)
-
+type URLStore struct {
+	urls map[string]string
+	mu   sync.RWMutex
 }
 
-func getTemplateRoot() string {
-	if v, found := props.Get(TEMPLATES); found {
-		return v
-	}
-	return "template/"
+func NewURLStore() *URLStore {
+	return &URLStore{urls: make(map[string]string)}
 }
 
-func pwd() {
-	if dl, err := os.ReadDir("."); err == nil {
-		for _, v := range dl {
-			if v.IsDir() {
-				log.Println("inside", v.Name())
-			}
+func (s *URLStore) Get(key string) string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.urls[key]
+}
+
+func (s *URLStore) Set(key, url string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, present := s.urls[key]; present {
+		return false
+	}
+	s.urls[key] = url
+	return true
+}
+
+func (s *URLStore) Count() int {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return len(s.urls)
+}
+
+func (s *URLStore) Put(url string) string {
+	for {
+		key := genKey(s.Count()) // generate the short URL
+		if ok := s.Set(key, url); ok {
+			return key
 		}
 	}
+	// shouldn't get here
+	return ""
 }
 
-var webTemplates listeners.FilesArray
-var htmlTemplates *template.Template
+const addForm = `
+<html><body>
+<form method="POST" action="/add">
+URL: <input type="text" name="url">
+<input type="submit" value="Add">
+</form>
+</html></body>
+`
+
+var store = NewURLStore()
+
+var keyChar = []byte("0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ")
+
+func genKey(n int) string {
+	if n == 0 {
+		return string(keyChar[0])
+	}
+	l := len(keyChar)
+	s := make([]byte, 20) // FIXME: will overflow. eventually.
+	i := len(s)
+	for n > 0 && i >= 0 {
+		i--
+		j := n % l
+		n = (n - j) / l
+		s[i] = keyChar[j]
+	}
+	return string(s[i:])
+}
+
+func handleGet(w http.ResponseWriter, r *http.Request) {
+	key := r.URL.Path[1:]
+	url := store.Get(key)
+	if url == "" {
+		http.NotFound(w, r)
+		return
+	}
+	http.Redirect(w, r, url, http.StatusFound)
+}
+
+func handleAdd(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "text/html")
+	url := r.FormValue("url")
+	if url == "" {
+		fmt.Fprint(w, addForm)
+		return
+	}
+	key := store.Put(url)
+
+	fmt.Fprintf(w, "%s", key)
+}
 
 // main method
 func main() {
-	log.Println("Starting server....", s)
 	fmt.Println("--- URL Shortner ---")
 
-	pwd()
+	http.HandleFunc("/", handleGet)
+	http.HandleFunc("/add", handleAdd)
 
-	if s := getTemplateRoot(); s != "" {
-		webTemplates = listeners.FileList(s)
-		htmlTemplates, err := listeners.LoadTemplates(webTemplates)
+	// Default listener
+	http.ListenAndServe(":8181", nil)
 
-		// load the templates
-		if err == nil {
-			myHandler.Tmp = htmlTemplates
-		}
-	}
-
-	// listeners.Listen()
-	log.Fatal(s.ListenAndServe())
 }
