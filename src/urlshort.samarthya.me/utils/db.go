@@ -18,11 +18,18 @@ type Interface interface {
 	Add(string, string) bool
 	// Get the value from the map
 	Get(string) (string, error)
+	//Len returns the length of the store
+	Len() int
+}
+
+//Len returns length of the map
+func (u *URLDB) Len() int {
+	return len(u.m)
 }
 
 // NewDB Creates a new data base
 func NewDB() *URLDB {
-	return &URLDB{m: make(map[string]string)}
+	return &URLDB{m: make(map[string]string, 1)}
 }
 
 // Add the url in the DB
@@ -46,6 +53,7 @@ func (u *URLDB) Get(k string) (string, error) {
 		log.Println("value will be overwritten", n)
 		return n, nil
 	}
+
 	log.Println("key not found", k)
 
 	return "", errors.New("key missing")
